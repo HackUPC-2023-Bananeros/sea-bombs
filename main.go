@@ -16,11 +16,6 @@ var (
 )
 
 const (
-	Up    Direction = 0
-	Down  Direction = 1
-	Right Direction = 2
-	Left  Direction = 3
-
 	Create  Type = 3
 	Move    Type = 4
 	End     Type = 5
@@ -61,8 +56,46 @@ type Game struct {
 func main() {
 	games := make(map[uuid.UUID]Game)
 	participants := make(map[string]Participant)
-
 	serverPort := 7000
+	server := start_server(serverPort)
+	server_addr := net.UDPAddr{}
+	go gameStatusSender(server, games, participants)
+
+	for {
+		data, addr := readMessage(server)
+
+		switch data.Event {
+		case Create:
+			createGame(data, games, participants)
+			server_addr = addr
+			break
+		case Check:
+			checkUser(data, addr, games, participants, server)
+			break
+		case Move:
+			updateMoveVector(data, games, participants)
+		case End:
+			endGame(server, server_addr, data, games, participants)
+		}
+
+	}
+
+}
+func readMessage(server *net.UDPConn) (Request, net.UDPAddr) {
+	p := make([]byte, 1024)
+	nn, addr, err := server.ReadFromUDP(p)
+	if err != nil {
+		fmt.Printf("Read err  %v", err)
+	}
+	msg := p[:nn]
+	data := Request{}
+	error := json.Unmarshal(msg, &data)
+	if error != nil {
+		fmt.Printf("JSON decode err %v", err)
+	}
+	return data, *addr
+}
+func start_server(serverPort int) *net.UDPConn {
 	if len(os.Args) > 1 {
 		if v, err := strconv.Atoi(os.Args[1]); err != nil {
 			fmt.Printf("Invalid port %v, err %v", os.Args[1], err)
@@ -81,40 +114,7 @@ func main() {
 		fmt.Printf("Listen err %v\n", err)
 		os.Exit(-1)
 	}
-	server_addr := net.UDPAddr{}
-	fmt.Printf("Listen at %v\n", addr.String())
-	go gameStatusSender(server, games, participants)
-
-	for {
-		p := make([]byte, 1024)
-		nn, raddr, err := server.ReadFromUDP(p)
-		if err != nil {
-			fmt.Printf("Read err  %v", err)
-			continue
-		}
-		msg := p[:nn]
-		data := Request{}
-		error := json.Unmarshal(msg, &data)
-		if error != nil {
-			fmt.Printf("JSON decode err %v", err)
-			continue
-		}
-		switch data.Event {
-		case Create:
-			createGame(data, games, participants)
-			server_addr = *raddr
-			break
-		case Check:
-			checkUser(data, *raddr, games, participants, server)
-			break
-		case Move:
-			updateMoveVector(data, games, participants)
-		case End:
-			endGame(server, server_addr, data, games, participants)
-		}
-
-	}
-
+	return server
 }
 func allUsersEnd(game uuid.UUID, games map[uuid.UUID]Game, participants map[string]Participant) bool {
 	for players := range games[game].Players {
