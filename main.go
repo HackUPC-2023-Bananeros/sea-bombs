@@ -36,7 +36,7 @@ type MoveRequest struct {
 	AxisY int
 }
 type Request struct {
-	Event    Type     `json:"event"`
+	Event    Type     `json:"type"`
 	Players  []string `json:"players"`
 	Player   string   `json:"player"`
 	Movement int      `json:"button_pressed"`
@@ -63,7 +63,7 @@ func main() {
 
 	for {
 		data, addr := readMessage(server)
-
+		fmt.Println(data)
 		switch data.Event {
 		case Create:
 			createGame(data, games, participants)
@@ -179,9 +179,11 @@ func gameStatusSender(server *net.UDPConn, games map[uuid.UUID]Game, participant
 func updateMoveVector(request Request, games map[uuid.UUID]Game, participants map[string]Participant) {
 	game := games[participants[request.Player].Game]
 	participant := participants[request.Player]
-	lock.Lock()
-	game.ActiveButtons[participant.Role] = request.Movement
-	lock.Unlock()
+	if &participant.Game != nil && &game.Players != nil && len(game.Players) > 0 {
+		lock.Lock()
+		game.ActiveButtons[participant.Role] = request.Movement
+		lock.Unlock()
+	}
 }
 func checkUser(request Request, address net.UDPAddr, games map[uuid.UUID]Game, participants map[string]Participant, server *net.UDPConn) {
 	participant := participants[request.Player]
