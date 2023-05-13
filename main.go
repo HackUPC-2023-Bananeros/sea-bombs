@@ -31,6 +31,10 @@ const (
 
 type Type int
 type Direction int
+type EndGame struct {
+	Event   Type     `json:"event"`
+	Players []string `json:"players"`
+}
 type MoveRequest struct {
 	Event Type
 	AxisX int
@@ -47,6 +51,7 @@ type Participant struct {
 	Role  Direction
 	Addr  net.UDPAddr
 	Ready bool
+	End   bool
 }
 type Game struct {
 	Players       []string
@@ -76,6 +81,7 @@ func main() {
 		fmt.Printf("Listen err %v\n", err)
 		os.Exit(-1)
 	}
+	server_addr := net.UDPAddr{}
 	fmt.Printf("Listen at %v\n", addr.String())
 	go gameStatusSender(server, games, participants)
 
@@ -96,6 +102,7 @@ func main() {
 		switch data.Event {
 		case Create:
 			createGame(data, games, participants)
+			server_addr = *raddr
 			break
 		case Check:
 			checkUser(data, *raddr, games, participants, server)
@@ -103,11 +110,44 @@ func main() {
 		case Move:
 			updateMoveVector(data, games, participants)
 		case End:
-
+			endGame(server, server_addr, data, games, participants)
 		}
 
 	}
 
+}
+func allUsersEnd(game uuid.UUID, games map[uuid.UUID]Game, participants map[string]Participant) bool {
+	for players := range games[game].Players {
+		if !participants[games[game].Players[players]].End {
+			return false
+		}
+	}
+	return true
+}
+func updateUserFinish(participant *Participant) Participant {
+	participant.End = true
+	return *participant
+}
+func endGame(server *net.UDPConn, server_addr net.UDPAddr, request Request, games map[uuid.UUID]Game, participants map[string]Participant) {
+	participant := participants[request.Player]
+	participants[request.Player] = updateUserFinish(&participant)
+	game := participants[request.Player].Game
+	if allUsersEnd(game, games, participants) {
+		data := &EndGame{End, games[game].Players}
+		b, _ := json.Marshal(data)
+
+		go func(conn *net.UDPConn, raddr *net.UDPAddr, msg []byte) {
+			_, err := conn.WriteToUDP([]byte(fmt.Sprintf("%s", msg)), raddr)
+			if err != nil {
+				fmt.Printf("Response err %v", err)
+			}
+		}(server, &server_addr, b)
+
+		for user := range games[game].Players {
+			delete(participants, games[game].Players[user])
+		}
+		delete(games, participant.Game)
+	}
 }
 func gameStatusSender(server *net.UDPConn, games map[uuid.UUID]Game, participants map[string]Participant) {
 	for {
@@ -124,7 +164,7 @@ func gameStatusSender(server *net.UDPConn, games map[uuid.UUID]Game, participant
 				for _, participant := range game.Players {
 					address := participants[participant].Addr
 
-					server.WriteToUDP([]byte(fmt.Sprintf("Pong: %s", b)), &address)
+					server.WriteToUDP([]byte(fmt.Sprintf("%s", b)), &address)
 
 				}
 
@@ -161,7 +201,7 @@ func communicateStart(members []string, participants map[string]Participant, ser
 	for val := range members {
 		claddr := participants[members[val]].Addr
 		go func(conn *net.UDPConn, raddr *net.UDPAddr, msg []byte) {
-			_, err := conn.WriteToUDP([]byte(fmt.Sprintf("Pong: %s", msg)), raddr)
+			_, err := conn.WriteToUDP([]byte(fmt.Sprintf("%s", msg)), raddr)
 			if err != nil {
 				fmt.Printf("Response err %v", err)
 			}
@@ -187,7 +227,7 @@ func createGame(request Request, games map[uuid.UUID]Game, participants map[stri
 	game := games[gameUuid]
 	for index, user := range request.Players {
 		games[gameUuid] = *addPlayers(&game, user)
-		participants[request.Players[index]] = Participant{gameUuid, Direction(index), net.UDPAddr{}, false}
+		participants[request.Players[index]] = Participant{gameUuid, Direction(index), net.UDPAddr{}, false, false}
 	}
 }
 func addPlayers(game *Game, user string) *Game {
