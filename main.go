@@ -7,12 +7,15 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"sync"
+	"time"
+)
+
+var (
+	lock sync.RWMutex
 )
 
 const (
-	PressButton   MoveAction = 1
-	ReleaseButton MoveAction = 0
-
 	Up    Direction = 0
 	Down  Direction = 1
 	Right Direction = 2
@@ -23,20 +26,21 @@ const (
 	End     Type = 5
 	Check   Type = 6
 	Started Type = 7
+	Update  Type = 8
 )
 
-type MoveAction int
 type Type int
 type Direction int
 type MoveRequest struct {
-	AxisX int8
-	AxisY int8
+	Event Type
+	AxisX int
+	AxisY int
 }
 type Request struct {
-	Event    Type       `json:"event"`
-	Players  []string   `json:"players"`
-	Player   string     `json:"player"`
-	Movement MoveAction `json:"button_pressed"`
+	Event    Type     `json:"event"`
+	Players  []string `json:"players"`
+	Player   string   `json:"player"`
+	Movement int      `json:"button_pressed"`
 }
 type Participant struct {
 	Game  uuid.UUID
@@ -44,9 +48,13 @@ type Participant struct {
 	Addr  net.UDPAddr
 	Ready bool
 }
+type Game struct {
+	Players       []string
+	ActiveButtons []int
+}
 
 func main() {
-	games := make(map[uuid.UUID][]string)
+	games := make(map[uuid.UUID]Game)
 	participants := make(map[string]Participant)
 
 	serverPort := 7000
@@ -69,6 +77,7 @@ func main() {
 		os.Exit(-1)
 	}
 	fmt.Printf("Listen at %v\n", addr.String())
+	go gameStatusSender(server, games, participants)
 
 	for {
 		p := make([]byte, 1024)
@@ -77,7 +86,6 @@ func main() {
 			fmt.Printf("Read err  %v", err)
 			continue
 		}
-
 		msg := p[:nn]
 		data := Request{}
 		error := json.Unmarshal(msg, &data)
@@ -87,25 +95,62 @@ func main() {
 		}
 		switch data.Event {
 		case Create:
-			create_game(data, games, participants)
+			createGame(data, games, participants)
 			break
 		case Check:
-			check_user(data, *raddr, games, participants, server)
+			checkUser(data, *raddr, games, participants, server)
 			break
 		case Move:
+			updateMoveVector(data, games, participants)
+		case End:
 
 		}
+
 	}
 
 }
-func check_user(request Request, address net.UDPAddr, games map[uuid.UUID][]string, participants map[string]Participant, server *net.UDPConn) {
-	participant := participants[request.Player]
-	participants[request.Player] = update_user_addr(&participant, address)
-	if all_users_ready(participants[request.Player], games, participants) {
-		communicate_start(games[participants[request.Player].Game], participants, server)
+func gameStatusSender(server *net.UDPConn, games map[uuid.UUID]Game, participants map[string]Participant) {
+	for {
+		for id, game := range games {
+			lock.Lock()
+
+			if allUsersReady(id, games, participants) {
+				request := &MoveRequest{Update,
+					game.ActiveButtons[2] - game.ActiveButtons[3],
+					game.ActiveButtons[0] - game.ActiveButtons[1]}
+
+				b, _ := json.Marshal(request)
+
+				for _, participant := range game.Players {
+					address := participants[participant].Addr
+
+					server.WriteToUDP([]byte(fmt.Sprintf("Pong: %s", b)), &address)
+
+				}
+
+			}
+			lock.Unlock()
+
+		}
+		time.Sleep(100 * time.Millisecond)
+
 	}
 }
-func communicate_start(members []string, participants map[string]Participant, server *net.UDPConn) {
+func updateMoveVector(request Request, games map[uuid.UUID]Game, participants map[string]Participant) {
+	game := games[participants[request.Player].Game]
+	participant := participants[request.Player]
+	lock.Lock()
+	game.ActiveButtons[participant.Role] = request.Movement
+	lock.Unlock()
+}
+func checkUser(request Request, address net.UDPAddr, games map[uuid.UUID]Game, participants map[string]Participant, server *net.UDPConn) {
+	participant := participants[request.Player]
+	participants[request.Player] = updateUserAddr(&participant, address)
+	if allUsersReady(participants[request.Player].Game, games, participants) {
+		communicateStart(games[participants[request.Player].Game].Players, participants, server)
+	}
+}
+func communicateStart(members []string, participants map[string]Participant, server *net.UDPConn) {
 	req := &Request{Event: Started}
 	b, err := json.Marshal(req)
 	if err != nil {
@@ -123,24 +168,29 @@ func communicate_start(members []string, participants map[string]Participant, se
 		}(server, &claddr, b)
 	}
 }
-func all_users_ready(participant Participant, games map[uuid.UUID][]string, participants map[string]Participant) bool {
-	for players := range games[participant.Game] {
-		if !participants[games[participant.Game][players]].Ready {
+func allUsersReady(game uuid.UUID, games map[uuid.UUID]Game, participants map[string]Participant) bool {
+	for players := range games[game].Players {
+		if !participants[games[game].Players[players]].Ready {
 			return false
 		}
 	}
 	return true
 }
-func update_user_addr(participant *Participant, address net.UDPAddr) Participant {
+func updateUserAddr(participant *Participant, address net.UDPAddr) Participant {
 	participant.Addr = address
 	participant.Ready = true
 	return *participant
 }
-func create_game(request Request, games map[uuid.UUID][]string, participants map[string]Participant) {
+func createGame(request Request, games map[uuid.UUID]Game, participants map[string]Participant) {
 	gameUuid := uuid.New()
-	games[gameUuid] = []string{}
-	for user := range request.Players {
-		games[gameUuid] = append(games[gameUuid], request.Players[user])
-		participants[request.Players[user]] = Participant{gameUuid, Direction(user), net.UDPAddr{}, false}
+	games[gameUuid] = Game{[]string{}, make([]int, 4)}
+	game := games[gameUuid]
+	for index, user := range request.Players {
+		games[gameUuid] = *addPlayers(&game, user)
+		participants[request.Players[index]] = Participant{gameUuid, Direction(index), net.UDPAddr{}, false}
 	}
+}
+func addPlayers(game *Game, user string) *Game {
+	game.Players = append(game.Players, user)
+	return game
 }
