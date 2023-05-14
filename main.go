@@ -33,12 +33,12 @@ type EndGame struct {
 type MoveRequest struct {
 	Event Type
 	AxisX int
+	AxisZ int
 	AxisY int
 }
 type Request struct {
 	Event    Type     `json:"type"`
 	Players  []string `json:"players"`
-	Player   string   `json:"player"`
 	Movement int      `json:"button_pressed"`
 }
 type Participant struct {
@@ -70,12 +70,12 @@ func main() {
 			server_addr = addr
 			break
 		case Check:
-			checkUser(data, addr, games, participants, server)
+			checkUser(addr.IP.String(), addr, games, participants, server)
 			break
 		case Move:
-			updateMoveVector(data, games, participants)
+			updateMoveVector(data, addr.IP.String(), games, participants)
 		case End:
-			endGame(server, server_addr, data, games, participants)
+			endGame(server, server_addr, addr.IP.String(), games, participants)
 		}
 
 	}
@@ -128,10 +128,10 @@ func updateUserFinish(participant *Participant) Participant {
 	participant.End = true
 	return *participant
 }
-func endGame(server *net.UDPConn, server_addr net.UDPAddr, request Request, games map[uuid.UUID]Game, participants map[string]Participant) {
-	participant := participants[request.Player]
-	participants[request.Player] = updateUserFinish(&participant)
-	game := participants[request.Player].Game
+func endGame(server *net.UDPConn, serverAddr net.UDPAddr, userIp string, games map[uuid.UUID]Game, participants map[string]Participant) {
+	participant := participants[userIp]
+	participants[userIp] = updateUserFinish(&participant)
+	game := participants[userIp].Game
 	if allUsersEnd(game, games, participants) {
 		data := &EndGame{End, games[game].Players}
 		b, _ := json.Marshal(data)
@@ -141,7 +141,7 @@ func endGame(server *net.UDPConn, server_addr net.UDPAddr, request Request, game
 			if err != nil {
 				fmt.Printf("Response err %v", err)
 			}
-		}(server, &server_addr, b)
+		}(server, &serverAddr, b)
 
 		for user := range games[game].Players {
 			delete(participants, games[game].Players[user])
@@ -156,8 +156,9 @@ func gameStatusSender(server *net.UDPConn, games map[uuid.UUID]Game, participant
 
 			if allUsersReady(id, games, participants) {
 				request := &MoveRequest{Update,
-					game.ActiveButtons[2] - game.ActiveButtons[3],
-					game.ActiveButtons[0] - game.ActiveButtons[1]}
+					game.ActiveButtons[1] - game.ActiveButtons[3],
+					game.ActiveButtons[0] - game.ActiveButtons[2],
+					0}
 
 				b, _ := json.Marshal(request)
 
@@ -176,20 +177,20 @@ func gameStatusSender(server *net.UDPConn, games map[uuid.UUID]Game, participant
 
 	}
 }
-func updateMoveVector(request Request, games map[uuid.UUID]Game, participants map[string]Participant) {
-	game := games[participants[request.Player].Game]
-	participant := participants[request.Player]
+func updateMoveVector(request Request, userIp string, games map[uuid.UUID]Game, participants map[string]Participant) {
+	game := games[participants[userIp].Game]
+	participant := participants[userIp]
 	if &participant.Game != nil && &game.Players != nil && len(game.Players) > 0 {
 		lock.Lock()
 		game.ActiveButtons[participant.Role] = request.Movement
 		lock.Unlock()
 	}
 }
-func checkUser(request Request, address net.UDPAddr, games map[uuid.UUID]Game, participants map[string]Participant, server *net.UDPConn) {
-	participant := participants[request.Player]
-	participants[request.Player] = updateUserAddr(&participant, address)
-	if allUsersReady(participants[request.Player].Game, games, participants) {
-		communicateStart(games[participants[request.Player].Game].Players, participants, server)
+func checkUser(userIp string, address net.UDPAddr, games map[uuid.UUID]Game, participants map[string]Participant, server *net.UDPConn) {
+	participant := participants[userIp]
+	participants[userIp] = updateUserAddr(&participant, address)
+	if allUsersReady(participants[userIp].Game, games, participants) {
+		communicateStart(games[participants[userIp].Game].Players, participants, server)
 	}
 }
 func communicateStart(members []string, participants map[string]Participant, server *net.UDPConn) {
