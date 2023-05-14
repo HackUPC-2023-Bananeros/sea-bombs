@@ -163,7 +163,7 @@ func gameStatusSender(server *net.UDPConn, games map[uuid.UUID]Game, participant
 
 				for _, participant := range game.Players {
 					address := participants[participant].Addr
-
+					fmt.Println(fmt.Sprintf("%s", b))
 					server.WriteToUDP([]byte(fmt.Sprintf("%s", b)), &address)
 
 				}
